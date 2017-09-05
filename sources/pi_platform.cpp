@@ -5,6 +5,14 @@
 
 #include "stdio.h"
 
+#undef ASSERT
+#ifdef RELEASE
+#define ASSERT 
+#else
+bool gassert = false;
+char gabuffer[1024];
+#define ASSERT(expression) if(!(expression)) { sprintf(assertMessage, "ASSERT FAILED on line %d in file %s\n", __LINE__, __FILE__); gassert = true; printf(assertMessage);}
+#endif
 
 
 int main(int argc, char ** argv) {
@@ -15,9 +23,9 @@ int main(int argc, char ** argv) {
     
     bool run = true;
     
-    void (*init)(void) = NULL;
+    void (*initPlatform)(bool*,char*) = NULL;
     void (*iterate)(bool*) = NULL;
-    void (*close)(void) = NULL;
+    void (*closePlatform)(void) = NULL;
     
     void * platformHandle = NULL;
     while(run){
@@ -25,20 +33,21 @@ int main(int argc, char ** argv) {
         stat(platformDll, &attr);
         if(lastChange != (long)attr.st_mtime){
             if(platformHandle != NULL){
-                close();
+                closePlatform();
                 dlclose(platformHandle);
             }
+            gassert = false;
             platformHandle = dlopen(platformDll, RTLD_NOW | RTLD_GLOBAL);
             if(platformHandle){
-                init = (void (*)(void))dlsym(platformHandle, "init");
+                initPlatform = (void (*)(bool*,char*))dlsym(platformHandle, "initPlatform");
                 iterate = (void (*)(bool*))dlsym(platformHandle, "iterate");
-                close = (void (*)(void))dlsym(platformHandle, "close");
-                if(close == NULL || iterate == NULL || close == NULL){
+                closePlatform = (void (*)(void))dlsym(platformHandle, "closePlatform");
+                if(closePlatform == NULL || iterate == NULL || closePlatform == NULL){
                     printf("Failed to find functions\n");
                     dlclose(platformHandle);
                     platformHandle = NULL;
                 }else{
-                    init();
+                    initPlatform(&gassert, gabuffer);
                 }
                 
             }else{
@@ -48,15 +57,19 @@ int main(int argc, char ** argv) {
             
             lastChange = (long)attr.st_mtime;
         }
-        if(platformHandle != NULL){
-            iterate(&run);
+        if(gassert){
+            printf(gabuffer);
         }else{
-            printf("Failed to load platform module. Sleeping for 1 second.\n");
-            sleep(1);
+            if(platformHandle != NULL){
+                iterate(&run);
+            }else{
+                printf("Failed to load platform module. Sleeping for 1 second.\n");
+                sleep(1);
+            }
         }
     }
     if(platformHandle != NULL){
-        close();
+        closePlatform();
         dlclose(platformHandle);
     }
     
