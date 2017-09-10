@@ -12,6 +12,8 @@
 
 
 #include <linux/videodev2.h>
+#include "util_time.h"
+#include "linux_time.cpp"
 
 
 bool * gassert;
@@ -58,6 +60,9 @@ struct State{
     v4l2_buffer cameraBuffer;
     char status[256];
     uint32 frame;
+    uint32 lastFps;
+    uint32 lastFrameMark;
+    float32 accumulator;
 };
 
 State state;
@@ -133,15 +138,14 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
                     state.renderTarget.info.interpretation = BitmapInterpretationType_ABGR;
                     state.renderTarget.info.bitsPerSample = 8;
                     state.renderTarget.info.samplesPerPixel = 4;
-                    state.renderTarget.data = &PPUSHA(byte, w*h*4);
-                    
-                    state.bytearray.len = w*h*4;
-                    state.bytearray.data = (guint8 *) state.renderTarget.data;
-                    state.pixbuf = gdk_pixbuf_new_from_bytes((GBytes*) &state.bytearray ,GDK_COLORSPACE_RGB, true, 8, w, h, w*4);
                     
                     
+                    state.pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, true, 8, w, h);
+                    state.renderTarget.data = gdk_pixbuf_get_pixels(state.pixbuf);
                     
+                    state.accumulator = 0;
                     state.frame = 0;
+                    state.lastFps = 0;
                     context.validInit = true;
                 }
             }
@@ -152,9 +156,16 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
 
 extern "C" void iterate(bool * keepRunning){
     if(context.validInit){
+        float32 startTime = getProcessCurrentTime();
+        if(state.accumulator >= 1){
+            uint32 seconds = (uint32)state.accumulator;
+            state.accumulator = state.accumulator - seconds;
+            state.lastFrameMark = state.frame;
+        }else{
+            state.lastFps = (uint32)((state.frame - state.lastFrameMark) / state.accumulator);
+        }
         
-        printf("Frame: %d\n", state.frame);
-        sprintf(state.status, "Frame: %d", state.frame);
+        sprintf(state.status, "FPS: %u #frames: %u", state.lastFps, state.frame);
         GdkEvent * event;
         
         while((event = gtk_get_current_event()) != NULL){
@@ -168,10 +179,10 @@ extern "C" void iterate(bool * keepRunning){
         pollfd p;
         p.fd = state.cameraHandle;
         p.events = POLLIN;
-        /*poll(&p, 1, 3000);
+        poll(&p, 1, 3000);
         while(ioctl(state.cameraHandle, VIDIOC_DQBUF, &state.cameraBuffer) == -1){
             printf("%u\n", errno);};
-            */
+        
         
         
         
@@ -184,31 +195,29 @@ extern "C" void iterate(bool * keepRunning){
         state.renderTarget.info.height = height;
         
         
-        
-        for(uint32 h = 0; h < height && h < context.cameraFeed.info.height; h++){
+        for(uint32 h = 0; h < height; h++){
             uint32 pitch = h * width;
-            for(uint32 w = 0; w < width && w < context.cameraFeed.info.width; w++){
-                uint32 pix = context.cameraFeed.data[(pitch + w) * 2];
-                ((uint32*)state.renderTarget.data)[pitch + w] = 0xFF000000 | pix | (pix << 8) | (pix << 16);
-            }
-        }
-        
-        /*while(ioctl(state.cameraHandle, VIDIOC_QBUF, &state.cameraBuffer) == -1){
-            printf("%u\n", errno);
-        };*/
-        
-        for(uint32 h = context.cameraFeed.info.height; h < height; h++){
-            uint32 pitch = h * width;
-            for(uint32 w = w < context.cameraFeed.info.width; w < width; w++){
-                ((uint32*)state.renderTarget.data)[pitch + w] = 0xFF0000FF;
+            for(uint32 w = 0; w < width; w++){
+                ((uint32*)state.renderTarget.data)[pitch + w] = 0xFF000000;
             }
         }
         
         //4b == 2 pixels, Y Cb Y Cr, Y are greyscale
+        for(uint32 h = 0; h < height && h < context.cameraFeed.info.height; h++){
+            uint32 pitch = h * width;
+            uint32 spitch= h * context.cameraFeed.info.width;
+            for(uint32 w = 0; w < width && w < context.cameraFeed.info.width; w++){
+                uint32 pix = context.cameraFeed.data[(spitch + w) * 2];
+                ((uint32*)state.renderTarget.data)[pitch + w] = 0xFF000000 | pix | (pix << 8) | (pix << 16);
+            }
+        }
         
-        //state.cameraFormat.fmt.pix.sizeimage;
+        while(ioctl(state.cameraHandle, VIDIOC_QBUF, &state.cameraBuffer) == -1){
+            printf("%u\n", errno);
+        };
         
-        //sprintf(state.status, "%u %u", state.cameraFormat.fmt.pix.width, state.cameraFormat.fmt.pix.height); 
+        
+        
         
         
         
@@ -228,7 +237,7 @@ extern "C" void iterate(bool * keepRunning){
         //sleep(1);
         //printf("VALID\n");
         state.frame++;
-        
+        state.accumulator += getProcessCurrentTime() - startTime;
     }else{
         sleep(1);
         printf("invalid init\n");
