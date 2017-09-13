@@ -23,6 +23,9 @@ char * gassertMessage;
 
 
 #include "common.h"
+#include <linux/input.h>
+#include "linux_joystick.h"
+
 
 #define PERSISTENT_MEM 0
 #define TEMP_MEM MEGABYTE(10)
@@ -45,6 +48,20 @@ struct Context{
 Context context;
 
 
+union GamepadInput{
+    struct{
+        struct {
+            int16 x, y;
+        } left;
+        int16 zLeft;
+        struct {
+            int16 x, y;
+        } right;
+    };
+    int16 values[5];
+};
+
+
 
 struct State{
     BitmapFont font;
@@ -54,6 +71,8 @@ struct State{
     GByteArray bytearray;
     Image renderTarget;
     int cameraHandle;
+    int gamepadMotorHandle;
+    int gamepadInputHandle;
     v4l2_capability cameraCapabilities;
     v4l2_format cameraFormat;
     v4l2_requestbuffers cameraIOmode;
@@ -63,6 +82,10 @@ struct State{
     uint32 lastFps;
     uint32 lastFrameMark;
     float32 accumulator;
+    ff_effect effect;
+    float response;
+    input_event play;
+    GamepadInput gamepadInput;
 };
 
 State state;
@@ -72,7 +95,6 @@ draw(GtkWidget *widget, GdkEventExpose *event, gpointer data)
 {
     gdk_draw_pixbuf(widget->window, NULL, state.pixbuf, 0, 0, 0, 0, state.renderTarget.info.width, state.renderTarget.info.height, GDK_RGB_DITHER_NONE, 0, 0);
     
-    printf("draw w: %u h: %u \n", state.renderTarget.info.width, state.renderTarget.info.height);
     
     return TRUE;
 }
@@ -86,10 +108,12 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
         initMemory(memoryStart);
         FileContents fontContents;
         Image fontImage;
-        bool result = readFile("data/font.bmp", &fontContents) && decodeBMP(&fontContents, &fontImage) && flipY(&fontImage) && initBitmapFont(&state.font, &fontImage, fontImage.info.width / 16);
+        bool font = readFile("data/font.bmp", &fontContents) && decodeBMP(&fontContents, &fontImage) && flipY(&fontImage) && initBitmapFont(&state.font, &fontImage, fontImage.info.width / 16);
         gtk_init(NULL, NULL);
         state.window = (GtkWindow *)gtk_window_new(GTK_WINDOW_TOPLEVEL);
         state.cameraHandle = open("/dev/video0", O_RDWR);
+        state.gamepadMotorHandle = open("/dev/input/event4", O_RDWR);
+        state.gamepadInputHandle = open("/dev/input/js0", O_RDONLY  | O_NONBLOCK);
         int index = 0;
         state.cameraFormat.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         state.cameraIOmode.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -106,8 +130,39 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
         state.cameraBuffer.index = 0;
         //https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/vidioc-querycap.html#vidioc-querycap
         //https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/pixfmt-yuyv.html Y is greyscale
-        if(state.window != NULL && result && state.cameraHandle != -1 && ioctl(state.cameraHandle, VIDIOC_QUERYCAP, &state.cameraCapabilities) != -1 && state.cameraCapabilities.device_caps & V4L2_CAP_VIDEO_CAPTURE && state.cameraCapabilities.device_caps & V4L2_CAP_STREAMING  && ioctl(state.cameraHandle, VIDIOC_G_FMT, &state.cameraFormat) != -1 && state.cameraFormat.fmt.pix.pixelformat & V4L2_PIX_FMT_YUYV && 
-           ioctl(state.cameraHandle, VIDIOC_REQBUFS, &state.cameraIOmode) != -1 && state.cameraIOmode.count == 1 && ioctl (state.cameraHandle, VIDIOC_QUERYBUF, &state.cameraBuffer) != -1){
+        
+        bool camera = state.cameraHandle != -1 && ioctl(state.cameraHandle, VIDIOC_QUERYCAP, &state.cameraCapabilities) != -1 && state.cameraCapabilities.device_caps & V4L2_CAP_VIDEO_CAPTURE && state.cameraCapabilities.device_caps & V4L2_CAP_STREAMING  && ioctl(state.cameraHandle, VIDIOC_G_FMT, &state.cameraFormat) != -1 && state.cameraFormat.fmt.pix.pixelformat & V4L2_PIX_FMT_YUYV && 
+            ioctl(state.cameraHandle, VIDIOC_REQBUFS, &state.cameraIOmode) != -1 && state.cameraIOmode.count == 1 && ioctl (state.cameraHandle, VIDIOC_QUERYBUF, &state.cameraBuffer) != -1;
+        //https://www.kernel.org/doc/Documentation/input/joystick-api.txt
+        
+        
+        state.effect = {};
+        state.effect.type = FF_RUMBLE;
+        state.effect.id = -1;
+        state.effect.u.rumble.strong_magnitude = 0;
+        state.effect.u.rumble.weak_magnitude   = 0;
+        state.effect.replay.length = 0;
+        state.effect.replay.delay  = 0;
+        
+        
+        
+        
+        
+        bool gamepadMotor = state.gamepadMotorHandle != -1 && ioctl(state.gamepadMotorHandle, EVIOCSFF, &state.effect) != -1;
+        
+        state.play.type = EV_FF;
+        state.play.code =  state.effect.id;
+        state.play.value = 1;
+        
+        gamepadMotor = gamepadMotor && write(state.gamepadMotorHandle, (const void*) &state.play, sizeof(state.play)) != -1;
+        bool gamepadInput =
+            state.gamepadInputHandle != -1;
+        
+        bool window = state.window != NULL;
+        
+        
+        
+        if(window && font && camera && gamepadMotor && gamepadInput){
             context.cameraFeed.info.width = state.cameraFormat.fmt.pix.width;
             context.cameraFeed.info.height = state.cameraFormat.fmt.pix.height;
             context.cameraFeed.info.totalSize = context.cameraFeed.info.width * context.cameraFeed.info.height * 2;
@@ -128,6 +183,7 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
                     g_signal_connect (G_OBJECT (state.drawArea), "expose_event",
                                       G_CALLBACK (draw), NULL);
                     gtk_widget_show(state.drawArea);
+                    gtk_window_set_decorated(state.window, false);
                     gtk_widget_show_now((GtkWidget *)state.window);
                     gint w;
                     gint h;
@@ -146,9 +202,29 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
                     state.accumulator = 0;
                     state.frame = 0;
                     state.lastFps = 0;
+                    state.response = 0;
+                    state.gamepadInput = {};
                     context.validInit = true;
                 }
             }
+        }else{
+            printf("invalid init\n");
+            if(!gamepadMotor){
+                printf("Gamepad motor init err\n");
+            }
+            if(!gamepadInput){
+                printf("Gamepad input init err\n");
+            }
+            if(!window){
+                printf("Window init err\n");
+            }
+            if(!camera){
+                printf("Camera init err\n");
+            }
+            if(!font){
+                printf("Font init err\n");
+            }
+            printf("errno: %d\n", errno);
         }
     }
     
@@ -165,7 +241,7 @@ extern "C" void iterate(bool * keepRunning){
             state.lastFps = (uint32)((state.frame - state.lastFrameMark) / state.accumulator);
         }
         
-        sprintf(state.status, "FPS: %u #frames: %u", state.lastFps, state.frame);
+        sprintf(state.status, "FPS:%u R:%.3f ", state.lastFps, state.response);
         GdkEvent * event;
         
         while((event = gtk_get_current_event()) != NULL){
@@ -176,6 +252,11 @@ extern "C" void iterate(bool * keepRunning){
         
         gtk_main_iteration_do(false);
         
+        
+        
+        
+        
+        
         pollfd p;
         p.fd = state.cameraHandle;
         p.events = POLLIN;
@@ -183,8 +264,27 @@ extern "C" void iterate(bool * keepRunning){
         while(ioctl(state.cameraHandle, VIDIOC_DQBUF, &state.cameraBuffer) == -1){
             printf("%u\n", errno);};
         
+        js_event jevent;
+        int bytesRead = -1;
+        while((bytesRead = read(state.gamepadInputHandle, &jevent, sizeof(jevent))) != -1){
+            if(bytesRead == sizeof(jevent)){
+                if(jevent.type & JS_EVENT_AXIS){
+                    state.gamepadInput.values[jevent.number] = jevent.value;
+                } 
+            }
+        }
         
+        state.response = state.gamepadInput.right.y / 32767.0f;
+        if(state.response != 0) state.response *= -1;
+        if(state.response < 0) state.response = 0;
+        if(state.response > 1) state.response = 1;
         
+        state.effect.u.rumble.weak_magnitude  = (uint16) (state.response * ((uint16) -1));
+        
+        if (ioctl(state.gamepadMotorHandle, EVIOCSFF, &state.effect) == -1) { 
+            strcat(state.status, "EU err");
+            printf("%u\n", errno);
+        }
         
         //render phase
         gint width;
@@ -240,27 +340,33 @@ extern "C" void iterate(bool * keepRunning){
         state.accumulator += getProcessCurrentTime() - startTime;
     }else{
         sleep(1);
-        printf("invalid init\n");
+        
     }
 }
 
 extern "C" void closePlatform(){
+    printf("calling close\n");
     if(mem.persistent != NULL){
         munmap((void*)context.cameraFeed.data, context.cameraFeed.info.totalSize);
-        if(context.validInit){
-            if(state.window != NULL){
-                
-                gtk_widget_destroy((GtkWidget *)state.drawArea);
-                gtk_widget_destroy((GtkWidget *)state.window);
-            }
-            
-            
-            
-            ioctl(state.cameraHandle, VIDIOC_STREAMOFF, &state.cameraIOmode.type);
-            free(mem.persistent);
-            close(state.cameraHandle);
+        ioctl(state.cameraHandle, VIDIOC_STREAMOFF, &state.cameraIOmode.type);
+        if(state.window != NULL){
+            printf("destroying window\n");
+            //gtk_widget_destroy((GtkWidget *)state.drawArea);
+            gtk_widget_destroy((GtkWidget *)state.window);
         }
+        
+        input_event play;
+        play.type = EV_FF;
+        play.code =  state.effect.id;
+        play.value = 0;
+        write(state.gamepadMotorHandle, (const void*) &play, sizeof(play));
+        close(state.gamepadInputHandle);
+        close(state.gamepadMotorHandle);
+        close(state.cameraHandle);
+        free(mem.persistent);
     }
+    
+    
 }
 
 
