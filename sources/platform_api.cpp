@@ -47,18 +47,25 @@ struct Context{
 
 Context context;
 
-
 union GamepadInput{
-    struct{
-        struct {
-            int16 x, y;
-        } left;
-        int16 zLeft;
-        struct {
-            int16 x, y;
-        } right;
-    };
-    int16 values[5];
+    union {
+        struct{
+            struct {
+                int16 x, y;
+            } left;
+            int16 zLeft;
+            struct {
+                int16 x, y;
+            } right;
+        };
+        int16 values[5];
+    } analog;
+    struct {
+        bool up;
+        bool left;
+        bool right;
+        bool down;
+    } digital;
 };
 
 
@@ -86,6 +93,7 @@ struct State{
     float response;
     input_event play;
     GamepadInput gamepadInput;
+    int32 exposure;
 };
 
 State state;
@@ -130,9 +138,13 @@ extern "C" void initPlatform(bool * assert, char * assertMessage){
         state.cameraBuffer.index = 0;
         //https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/vidioc-querycap.html#vidioc-querycap
         //https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/pixfmt-yuyv.html Y is greyscale
-        
+        //https://www.linuxtv.org/downloads/legacy/video4linux/API/V4L2_API/spec-single/v4l2.html#camera-controls
+        v4l2_control settings;
+        settings.id = V4L2_CID_EXPOSURE_AUTO;
+        settings.value = V4L2_EXPOSURE_MANUAL;
         bool camera = state.cameraHandle != -1 && ioctl(state.cameraHandle, VIDIOC_QUERYCAP, &state.cameraCapabilities) != -1 && state.cameraCapabilities.device_caps & V4L2_CAP_VIDEO_CAPTURE && state.cameraCapabilities.device_caps & V4L2_CAP_STREAMING  && ioctl(state.cameraHandle, VIDIOC_G_FMT, &state.cameraFormat) != -1 && state.cameraFormat.fmt.pix.pixelformat & V4L2_PIX_FMT_YUYV && 
-            ioctl(state.cameraHandle, VIDIOC_REQBUFS, &state.cameraIOmode) != -1 && state.cameraIOmode.count == 1 && ioctl (state.cameraHandle, VIDIOC_QUERYBUF, &state.cameraBuffer) != -1;
+            ioctl(state.cameraHandle, VIDIOC_REQBUFS, &state.cameraIOmode) != -1 && state.cameraIOmode.count == 1 && ioctl(state.cameraHandle, VIDIOC_QUERYBUF, &state.cameraBuffer) != -1 &&
+            ioctl(state.cameraHandle, VIDIOC_S_CTRL, &settings) != -1;
         //https://www.kernel.org/doc/Documentation/input/joystick-api.txt
         
         
@@ -241,7 +253,7 @@ extern "C" void iterate(bool * keepRunning){
             state.lastFps = (uint32)((state.frame - state.lastFrameMark) / state.accumulator);
         }
         
-        sprintf(state.status, "FPS:%u R:%.3f ", state.lastFps, state.response);
+        sprintf(state.status, "FPS:%u R:%.3f E:%d", state.lastFps, state.response, state.exposure);
         GdkEvent * event;
         
         while((event = gtk_get_current_event()) != NULL){
@@ -251,6 +263,7 @@ extern "C" void iterate(bool * keepRunning){
         }
         
         gtk_main_iteration_do(false);
+        //https://www.linuxtv.org/downloads/legacy/video4linux/API/V4L2_API/spec-single/v4l2.html#camera-controls
         
         
         
@@ -268,13 +281,52 @@ extern "C" void iterate(bool * keepRunning){
         int bytesRead = -1;
         while((bytesRead = read(state.gamepadInputHandle, &jevent, sizeof(jevent))) != -1){
             if(bytesRead == sizeof(jevent)){
-                if(jevent.type & JS_EVENT_AXIS){
-                    state.gamepadInput.values[jevent.number] = jevent.value;
-                } 
+                if(!(jevent.type & JS_EVENT_INIT)){
+                    if(jevent.type & JS_EVENT_AXIS){
+                        if(jevent.number < 6){
+                            state.gamepadInput.analog.values[jevent.number] = jevent.value;
+                        }else{
+                            if(jevent.number == 6){
+                                if(jevent.value < 0){
+                                    state.gamepadInput.digital.left = true;
+                                    state.gamepadInput.digital.right = false;
+                                }else if(jevent.value > 0){
+                                    state.gamepadInput.digital.right = true;
+                                    state.gamepadInput.digital.left = false;
+                                }else{
+                                    state.gamepadInput.digital.left = state.gamepadInput.digital.right = false;
+                                }
+                            }else if(jevent.number == 7){
+                                if(jevent.value < 0){
+                                    state.gamepadInput.digital.up = true;
+                                    state.gamepadInput.digital.down = false;
+                                }else if(jevent.value > 0){
+                                    state.gamepadInput.digital.down = true;
+                                    state.gamepadInput.digital.up = false;
+                                }else{
+                                    state.gamepadInput.digital.down = state.gamepadInput.digital.up = false;
+                                }
+                            }
+                        }
+                    }else if(jevent.type & JS_EVENT_BUTTON){
+                        printf("n: %hhu v: %hd\n", jevent.number, jevent.value);
+                    }
+                }
             }
         }
         
-        state.response = state.gamepadInput.right.y / 32767.0f;
+        if(state.gamepadInput.digital.up){
+            state.exposure += 25;
+        }else if(state.gamepadInput.digital.down){
+            state.exposure -= 25;
+        }
+        if(state.exposure < 0){
+            state.exposure = 0;
+        }
+        
+        //printf("%hhd %hhd %hhd %hhd\n", state.gamepadInput.digital.up, state.gamepadInput.digital.right, state.gamepadInput.digital.down, state.gamepadInput.digital.left);
+        
+        state.response = state.gamepadInput.analog.right.y / 32767.0f;
         if(state.response != 0) state.response *= -1;
         if(state.response < 0) state.response = 0;
         if(state.response > 1) state.response = 1;
@@ -284,6 +336,15 @@ extern "C" void iterate(bool * keepRunning){
         if (ioctl(state.gamepadMotorHandle, EVIOCSFF, &state.effect) == -1) { 
             strcat(state.status, "EU err");
             printf("%u\n", errno);
+        }
+        
+        v4l2_control settings;
+        settings.id = V4L2_CID_EXPOSURE_ABSOLUTE;
+        settings.value = state.exposure;
+        
+        if(ioctl(state.cameraHandle, VIDIOC_S_CTRL, &settings) == -1){
+            printf("errno: %d\n", errno);
+            strcat(state.status, " ERR");
         }
         
         //render phase
