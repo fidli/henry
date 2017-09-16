@@ -11,8 +11,24 @@
 #else
 bool gassert = false;
 char gabuffer[1024];
-#define ASSERT(expression) if(!(expression)) { sprintf(assertMessage, "ASSERT FAILED on line %d in file %s\n", __LINE__, __FILE__); gassert = true; printf(assertMessage);}
+#define ASSERT(expression) if(!(expression)) { sprintf(gabuffer, "ASSERT FAILED on line %d in file %s\n", __LINE__, __FILE__); gassert = true; printf(gabuffer);}
 #endif
+
+void * platformHandle = NULL;
+void (*initPlatform)(bool*,char*) = NULL;
+void (*iterate)(bool*) = NULL;
+void (*closePlatform)(void) = NULL;
+
+inline void closeDll(){
+    if(platformHandle != NULL){
+        if(closePlatform != NULL) closePlatform();
+        dlclose(platformHandle);
+        platformHandle = NULL;
+        initPlatform = NULL;
+        closePlatform = NULL;
+        iterate = NULL;
+    }
+}
 
 
 int main(int argc, char ** argv) {
@@ -23,19 +39,15 @@ int main(int argc, char ** argv) {
     
     bool run = true;
     
-    void (*initPlatform)(bool*,char*) = NULL;
-    void (*iterate)(bool*) = NULL;
-    void (*closePlatform)(void) = NULL;
     
-    void * platformHandle = NULL;
+    
+    
     while(run){
         struct stat attr;
         stat(platformDll, &attr);
         if(lastChange != (long)attr.st_mtime){
-            if(platformHandle != NULL){
-                closePlatform();
-                dlclose(platformHandle);
-            }
+            closeDll();
+            
             gassert = false;
             platformHandle = dlopen(platformDll, RTLD_NOW | RTLD_GLOBAL);
             if(platformHandle){
@@ -68,10 +80,7 @@ int main(int argc, char ** argv) {
             }
         }
     }
-    if(platformHandle != NULL){
-        closePlatform();
-        dlclose(platformHandle);
-    }
+    closeDll();
     
     return 0;
     
