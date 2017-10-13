@@ -1,4 +1,9 @@
 # henry
+
+#project postponed. this will Not be my thesis
+
+
+
 possibly my thesis?
 
 this is an attempt to check, whether my idea has sense
