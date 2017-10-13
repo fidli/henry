@@ -26,7 +26,9 @@
                     bool valid;
                     bool setting;
                     uint8 currentSetting;
+                    uint8 currentCamera;
                     bool wasMenu;
+                    bool wasSwap;
                 };
                 
                 
@@ -50,8 +52,15 @@
                     domainState->valid = font;
                     domainState->setting = false;
                     domainState->currentSetting = 0;
+                    domainState->wasMenu = false;
+                    
                     if(!font){
                         printf("Font init err\n");
+                    }
+                    if(domainState->valid){
+                        printf("Domain init all good\n");
+                    }else{
+                        printf("Domain init BAD");
                     }
                 }
                 
@@ -64,6 +73,15 @@
                             domainState->setting = !domainState->setting;
                         }
                         
+                        if(domainState->input.digital.x && !domainState->wasSwap){
+                            printf("swap \n");
+                            Camera tmp = domainState->cameras[0];
+                            domainState->cameras[0] = domainState->cameras[1];
+                            domainState->cameras[1] = tmp;
+                            
+                        }
+                        
+                        domainState->wasSwap = domainState->input.digital.x;
                         
                         
                         //input
@@ -80,37 +98,38 @@
                             }
                             
                             
+                            
                             if(domainState->input.digital.up){
                                 if(domainState->currentSetting == 0){
-                                    domainState->cameras[0].settings.exposure += 25;
+                                    domainState->cameras[domainState->currentCamera].settings.exposure += 25;
                                 }else if(domainState->currentSetting == 1){
-                                    domainState->cameras[0].settings.contrast++;
+                                    domainState->cameras[domainState->currentCamera].settings.contrast++;
                                 }else if(domainState->currentSetting == 2){
-                                    domainState->cameras[0].settings.brightness++;
+                                    domainState->cameras[domainState->currentCamera].settings.brightness++;
                                 }else if(domainState->currentSetting == 3){
-                                    domainState->cameras[0].settings.sharpness++;
+                                    domainState->cameras[domainState->currentCamera].settings.sharpness++;
                                 }else if(domainState->currentSetting == 4){
-                                    domainState->cameras[0].settings.gain += 5;
+                                    domainState->cameras[domainState->currentCamera].settings.gain += 5;
                                 }else if(domainState->currentSetting == 5){
-                                    domainState->cameras[0].settings.backlight++;
+                                    domainState->cameras[domainState->currentCamera].settings.backlight++;
                                 }else if(domainState->currentSetting == 6){
-                                    domainState->cameras[0].settings.whiteBalance+=100;
+                                    domainState->cameras[domainState->currentCamera].settings.whiteBalance+=100;
                                 }
                             }else if(domainState->input.digital.down){
                                 if(domainState->currentSetting == 0){
-                                    domainState->cameras[0].settings.exposure -= 25;
+                                    domainState->cameras[domainState->currentCamera].settings.exposure -= 25;
                                 }else if(domainState->currentSetting == 1){
-                                    domainState->cameras[0].settings.contrast--;
+                                    domainState->cameras[domainState->currentCamera].settings.contrast--;
                                 }else if(domainState->currentSetting == 2){
-                                    domainState->cameras[0].settings.brightness--;
+                                    domainState->cameras[domainState->currentCamera].settings.brightness--;
                                 }else if(domainState->currentSetting == 3){
-                                    domainState->cameras[0].settings.sharpness--;
+                                    domainState->cameras[domainState->currentCamera].settings.sharpness--;
                                 }else if(domainState->currentSetting == 4){
-                                    domainState->cameras[0].settings.gain -= 5;
+                                    domainState->cameras[domainState->currentCamera].settings.gain -= 5;
                                 }else if(domainState->currentSetting == 5){
-                                    domainState->cameras[0].settings.backlight--;
+                                    domainState->cameras[domainState->currentCamera].settings.backlight--;
                                 }else if(domainState->currentSetting == 6){
-                                    domainState->cameras[0].settings.whiteBalance-=100;
+                                    domainState->cameras[domainState->currentCamera].settings.whiteBalance-=100;
                                 }
                             }
                             
@@ -118,6 +137,17 @@
                             
                             
                             
+                            
+                        }else{
+                            if(domainState->input.digital.up){
+                                if(domainState->currentCamera != 0){
+                                    domainState->currentCamera--;
+                                }
+                            }else if(domainState->input.digital.down){
+                                if(domainState->currentCamera != CameraPositionCount-1){
+                                    domainState->currentCamera++;
+                                }
+                            }
                             
                         }
                         
@@ -140,33 +170,33 @@
                             }
                         }
                         
-                        //4b == 2 pixels, Y Cb Y Cr, Y are greyscale
-                        for(uint32 h = 0; h < height && h < domainState->cameras[0].feed.info.height; h++){
-                            uint32 pitch = h * width;
-                            uint32 spitch= h * domainState->cameras[0].feed.info.width;
-                            for(uint32 w = 0; w < width && w < domainState->cameras[0].feed.info.width; w++){
-                                uint32 pix = domainState->cameras[0].feed.data[(spitch + w) * 2];
-                                ((uint32*)domainState->renderTarget.data)[pitch + w] = 0xFF000000 | pix | (pix << 8) | (pix << 16);
+                        printToBitmap(&domainState->renderTarget, 0, 0, "LEFT EYE", &domainState->font, 16);
+                        printToBitmap(&domainState->renderTarget, 321, 0, "RIGHT EYE", &domainState->font, 16);
+                        
+                        for(uint8 ci = 0; ci < CameraPositionCount; ci++){
+                            //4b == 2 pixels, Y Cb Y Cr, Y are greyscale
+                            for(uint32 h = 0; h < height && h*2 < domainState->cameras[ci].feed.info.height; h++){
+                                uint32 pitch = (h + 16) * width;
+                                uint32 spitch= h*2 * domainState->cameras[ci].feed.info.width;
+                                for(uint32 w = 0; w < width && w*2 < domainState->cameras[ci].feed.info.width; w++){
+                                    uint32 pix = domainState->cameras[ci].feed.data[(spitch + w*2) * 2];
+                                    ((uint32*)domainState->renderTarget.data)[pitch + w + 321*ci] = 0xFF000000 | pix | (pix << 8) | (pix << 16);
+                                }
                             }
+                            
                         }
                         
-                        for(uint32 h = height - 32; h < height; h++){
-                            uint32 pitch = h * width;
-                            for(uint32 w = 0; w < width; w++){
-                                ((uint32*)domainState->renderTarget.data)[pitch + w] = 0xFF000000;
-                            }
-                        }
                         
                         uint32 offset = 0;
                         char buf[50];
                         //fps
                         sprintf(buf, "FPS:%u", domainState->lastFps);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16));
+                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 48, buf, &domainState->font, 16));
                         offset += strlen(buf);
                         
                         //response
                         sprintf(buf, "|R:%.2f", domainState->feedback);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16));
+                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 48, buf, &domainState->font, 16));
                         offset += strlen(buf);
                         
                         
@@ -175,42 +205,54 @@
                         Color r;
                         r.full = 0xFF0000FF;
                         
-                        //exposure
-                        sprintf(buf, "|E:%d", domainState->cameras[0].settings.exposure);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf,&domainState->font, 16, (domainState->setting && domainState->currentSetting == 0) ? r : w));
-                        offset += strlen(buf);
-                        
-                        //contrast
-                        sprintf(buf, "|C:%d", domainState->cameras[0].settings.contrast);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 1) ? r : w));
-                        offset += strlen(buf);
-                        
-                        //brightness
-                        sprintf(buf, "|B:%d", domainState->cameras[0].settings.brightness);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 2) ? r : w));
-                        offset += strlen(buf);
-                        
-                        //sharpness
-                        sprintf(buf, "|S:%d", domainState->cameras[0].settings.sharpness);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 3) ? r : w));
-                        offset += strlen(buf);
-                        
-                        //gain
-                        sprintf(buf, "|G+:%d", domainState->cameras[0].settings.gain);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 4) ? r : w));
-                        offset += strlen(buf);
-                        //backlight
-                        sprintf(buf, "|BL:%d", domainState->cameras[0].settings.backlight);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 5) ? r : w));
-                        offset += strlen(buf);
-                        
-                        offset = 0;
-                        //whiteBalance
-                        sprintf(buf, "|WB:%d", domainState->cameras[0].settings.whiteBalance);
-                        ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 6) ? r : w));
-                        offset += strlen(buf);
-                        
-                        
+                        for(uint8 ci = 0; ci < CameraPositionCount; ci++){
+                            offset = 0;
+                            
+                            if(ci == CameraPosition_Left){
+                                ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, "LEFT", &domainState->font, 16, w));
+                                offset += strlen("LEFT: ");
+                                
+                            }else if(ci == CameraPosition_Right){
+                                ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, "RIGHT", &domainState->font, 16, w));
+                                offset += strlen("RIGHT:");
+                            }
+                            
+                            //exposure
+                            sprintf(buf, "E:%d", domainState->cameras[ci].settings.exposure);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf,&domainState->font, 16, (domainState->setting && domainState->currentSetting == 0 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            
+                            //contrast
+                            sprintf(buf, "|C:%d", domainState->cameras[ci].settings.contrast);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 1 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            
+                            //brightness
+                            sprintf(buf, "|B:%d", domainState->cameras[ci].settings.brightness);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 2 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            
+                            //sharpness
+                            sprintf(buf, "|S:%d", domainState->cameras[ci].settings.sharpness);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 3 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            
+                            //gain
+                            sprintf(buf, "|G+:%d", domainState->cameras[ci].settings.gain);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 4 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            //backlight
+                            sprintf(buf, "|BL:%d", domainState->cameras[ci].settings.backlight);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 5 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            
+                            //whiteBalance
+                            sprintf(buf, "|WB:%d", domainState->cameras[ci].settings.whiteBalance);
+                            ASSERT(printToBitmap(&domainState->renderTarget, offset*domainState->font.current.gridSize, height - 32 + ci*16, buf, &domainState->font, 16, (domainState->setting && domainState->currentSetting == 6 && domainState->currentCamera == ci) ? r : w));
+                            offset += strlen(buf);
+                            
+                            
+                        }
                     }
                 }
                 
